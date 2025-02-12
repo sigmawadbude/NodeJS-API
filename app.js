@@ -1,14 +1,25 @@
 const express = require('express');
-const fs = require('fs');
 const bodyParser = require('body-parser');
+const sqlite3 = require('sqlite3').verbose();
 const {v4: uuidv4} = require('uuid');
-const { title } = require('process');
 const app = express();
 const port = process.env.PORT || 3000;
-const DATA_FILE = './tasks.json';
 
 app.use(bodyParser.json());
 
+const db = new sqlite3.Database('./tasks.db', (err) => {
+  if (err) {
+    console.error('Error opening database ' + err.message);
+  } else {
+    db.run('CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, title TEXT NOT NULL, completed BOOLEAN)', (err) => {
+      if (err) {
+        console.error('Error creating table ' + err.message);
+      }
+    });
+  }
+})
+
+// remove
 function readTasks() {
   try {
     return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
@@ -16,51 +27,50 @@ function readTasks() {
     return [];
   }
 }
-
+// remove
 function writeTasks(tasks) {
   fs.writeFileSync(DATA_FILE, JSON.stringify(tasks, null, 2));
 }
 
 app.get('/tasks', (req, res) => {
-  res.json(readTasks());
+  db.all('SELECT * FROM tasks', (err, tasks) => {
+    if(err) return res.status(500).json({error: err.message});
+
+    res.json(tasks);
+  })
 });
 
 app.post('/tasks', (req, res) => {
-  const tasks = readTasks();
-  const newTask = req.body;
-  newTask.id = uuidv4();
-  tasks.push(newTask);
-  writeTasks(tasks);
-  res.status(201).json(newTask);
+  const {title, completed} = req.body;
+  const newId = uuidv4();
+  db.run('INSERT INTO tasks (id, title, completed) VALUES (?, ?, ?)', [newId, title, completed], (err) => {
+    if(err) return res.status(500).json({error: err.message});
+
+    res.status(201).json({id: newId, title, completed});
+  });
 });
 
 app.delete('/tasks/:id', (req, res) => {
-  const tasks = readTasks();
   const taskId = req.params.id;
-  const newTasks = tasks.filter(task => task.id !== taskId);
-  if (newTasks.length === tasks.length) {
-    res.status(404).send('Task not found');
-  }
-    writeTasks(newTasks);
+  db.run('DELETE FROM tasks WHERE id = ?', [taskId], (err) => {
+    if(err) return res.status(500).json({error: err.message});
+    if(this.changes === 0) return res.status(404).send('Task not found');
+
     res.status(204).send();
+  });
   
 });
 
 app.put('/tasks/:id', (req, res) => {
-  const tasks = readTasks();
   const taskId = req.params.id;
-  const taskIndex = tasks.findIndex(task => task.id === taskId);
-  if (taskIndex === -1) {
-    res.status(404).send('Task not found');
-  }
-  tasks[taskIndex] = {
-    ...tasks[taskIndex],
-    title: req.body.title !== undefined ? req.body.title : tasks[taskIndex].title,
-    completed: req.body.completed !== undefined ? req.body.completed : tasks[taskIndex].completed
-  }
+  const {title, completed} = req.body;
+  
+  db.run('UPDATE tasks SET title = COALESCE(?, title), completed = COALESCE(?, completed) WHERE id = ?', [title, completed, taskId], (err) => {
+    if(err) return res.status(500).json({error: err.message});
+    if(this.changes === 0) return res.status(404).send('Task not found');
 
-  writeTasks(tasks);
-  res.json(tasks[taskIndex]);
+    res.json({id: taskId, title, completed});
+  });
 });
 
 app.listen(port, () => {
